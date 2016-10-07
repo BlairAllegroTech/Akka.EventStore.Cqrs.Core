@@ -13,24 +13,26 @@ namespace Akka.EventStore.Cqrs.Core
         Guid Id { get; }
         IActorRef Projections { get; }
         int SnapshotThreshold { get; }
+
+        TimeSpan? RecieveTimeout { get; }
     }
 
     public class AggregateRootCreationParameters : IAggregateRootCreationParameters
     {
-        public AggregateRootCreationParameters(Guid id, IActorRef projections, int snapshotThreshold = 250)
+        public AggregateRootCreationParameters(Guid id, IActorRef projections, int snapshotThreshold = 250, TimeSpan? receiveTimeout = null)
         {
             Id = id;
             Projections = projections;
             SnapshotThreshold = snapshotThreshold;
+            RecieveTimeout = receiveTimeout;
         }
-        //public AggregateRootCreationParameters(IActorRef projections, int snapshotThreshold = 250)
-        //{
-        //    Projections = projections;
-        //    SnapshotThreshold = snapshotThreshold;
-        //}
+ 
 
         public Guid Id { get; private set; }
         public IActorRef Projections { get; private set; }
+
+        public TimeSpan? RecieveTimeout { get; private set; }
+
         public int SnapshotThreshold { get; private set; }
     }
 
@@ -51,6 +53,9 @@ namespace Akka.EventStore.Cqrs.Core
 
             _exceptions = new List<Exception>();
             _log = Context.GetLogger();
+
+            if(parameters.RecieveTimeout.HasValue)
+                Context.SetReceiveTimeout(parameters.RecieveTimeout.Value);
         }
 
         public override string PersistenceId
@@ -114,6 +119,12 @@ namespace Akka.EventStore.Cqrs.Core
                 }
             }))
                 return true;
+
+            if (message.WasHandled<ReceiveTimeout>(timeout =>
+            {
+                Context.Parent.Tell(new PassivateMessage(_id));
+                return true;
+            }))return true;
 
             return false;
         }
