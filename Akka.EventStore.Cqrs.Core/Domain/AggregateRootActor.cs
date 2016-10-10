@@ -33,10 +33,16 @@ namespace Akka.EventStore.Cqrs.Core
 
         public TimeSpan? RecieveTimeout { get; private set; }
 
+        /// <summary>
+        /// Values less than 1 disable snapshotting
+        /// </summary>
         public int SnapshotThreshold { get; private set; }
     }
 
-    public abstract class AggregateRootActor : PersistentActor, IEventSink
+    public abstract class AggregateRootActor<T> : 
+        PersistentActor, 
+        IEventSink
+        where T : Domain.IPersistable
     {
         private readonly Guid _id;
         private readonly IActorRef _projections;
@@ -49,13 +55,20 @@ namespace Akka.EventStore.Cqrs.Core
         {
             _id = parameters.Id;
             _projections = parameters.Projections;
-            _snapshotThreshold = parameters.SnapshotThreshold;
+            
+            // Disable snapshots on non snapshotable types
+            if (typeof(ISnapShotable).IsAssignableFrom(typeof(T)))
+                _snapshotThreshold = parameters.SnapshotThreshold; 
+            else
+                _snapshotThreshold = 0;
 
             _exceptions = new List<Exception>();
             _log = Context.GetLogger();
 
             if(parameters.RecieveTimeout.HasValue)
                 Context.SetReceiveTimeout(parameters.RecieveTimeout.Value);
+
+            
         }
 
         public override string PersistenceId
@@ -69,6 +82,12 @@ namespace Akka.EventStore.Cqrs.Core
             Persist(@event, e =>
             {
                 Apply(e);
+
+                // Generate snapshots
+                if (ShouldSnapShot())
+                {
+                    this.Self.Tell(SaveAggregate.Message);
+                }
                 _projections.Tell(@event);
             });
         }
@@ -87,7 +106,7 @@ namespace Akka.EventStore.Cqrs.Core
                 var offer = snapshot.Value;
                 _log.Debug("State loaded from snapshot");
                 LastSnapshottedVersion = offer.Metadata.SequenceNr;
-                return RecoverState(offer.Snapshot);
+                return RecoverState(offer.Snapshot, LastSnapshottedVersion);
             }
 
             if (message.CanHandle<IEvent>(@event =>
@@ -131,18 +150,27 @@ namespace Akka.EventStore.Cqrs.Core
 
         private bool Save()
         {
-            if ((LastSequenceNr - LastSnapshottedVersion) >= _snapshotThreshold)
+            if (ShouldSnapShot())
             {
-                SaveSnapshot(GetState());
-                LastSnapshottedVersion = LastSequenceNr;
+                var stateMomento = GetState();
+                if (stateMomento != null)
+                {
+                    SaveSnapshot(stateMomento);
+                    LastSnapshottedVersion = LastSequenceNr;
+                }
             }
 
             return true;
         }
 
+        private bool ShouldSnapShot()
+        {
+            return (_snapshotThreshold > 0 && (LastSequenceNr - LastSnapshottedVersion) >= _snapshotThreshold);
+        }
+
         protected abstract bool Handle(ICommand command);
         protected abstract bool Apply(IEvent @event);
-        protected abstract bool RecoverState(object state);
+        protected abstract bool RecoverState(object state, long version);
         protected abstract object GetState();
     }
 }
